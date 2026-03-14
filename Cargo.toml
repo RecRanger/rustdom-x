@@ -2,6 +2,8 @@
 name = "rustdom-x"
 version = "0.1.0"
 edition = "2024"
+description = "A fully rust RandomX implementation"
+license = "GNU-GPL"
 
 [dependencies]
 blake2b_simd = "1.0.4"
