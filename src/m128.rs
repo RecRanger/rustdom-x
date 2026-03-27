@@ -156,12 +156,126 @@ fn aesdec(state: u128, key: u128) -> u128 {
 }
 
 // ---- m128i ----
+#[cfg(target_arch = "x86_64")]
+use std::arch::x86_64::*;
+
+#[cfg(target_arch = "aarch64")]
+use std::arch::aarch64::*;
 
 #[allow(nonstandard_style)]
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub struct m128i(pub u128);
 
 impl m128i {
+    pub fn aesenc(&self, key: m128i) -> m128i {
+        // 1. Try x86 Hardware (Intel/AMD)
+        #[cfg(target_arch = "x86_64")]
+        {
+            if is_x86_feature_detected!("aes") {
+                return unsafe { self.hw_aesenc_x86(key) };
+            }
+        }
+
+        // 2. Try ARM Hardware (Android/iOS)
+        #[cfg(target_arch = "aarch64")]
+        {
+            if std::arch::is_aarch64_feature_detected!("aes") {
+                return unsafe { self.hw_aesenc_aarch64(key) };
+            }
+        }
+
+        // 3. Fallback to Software (Old/Cheap devices)
+        self.sw_aesenc(key)
+    }
+
+    pub fn aesdec(&self, key: m128i) -> m128i {
+        #[cfg(target_arch = "x86_64")]
+        {
+            if is_x86_feature_detected!("aes") {
+                return unsafe { self.hw_aesdec_x86(key) };
+            }
+        }
+
+        #[cfg(target_arch = "aarch64")]
+        {
+            if std::arch::is_aarch64_feature_detected!("aes") {
+                return unsafe { self.hw_aesdec_aarch64(key) };
+            }
+        }
+
+        self.sw_aesdec(key)
+    }
+
+    // --- x86 Hardware Implementation ---
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "aes")]
+    unsafe fn hw_aesenc_x86(&self, key: m128i) -> m128i {
+        unsafe {
+            let s = _mm_loadu_si128(&self.0 as *const u128 as *const __m128i);
+            let k = _mm_loadu_si128(&key.0 as *const u128 as *const __m128i);
+            let r = _mm_aesenc_si128(s, k);
+            let mut out = 0u128;
+            _mm_storeu_si128(&mut out as *mut u128 as *mut __m128i, r);
+            m128i(out)
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "aes")]
+    unsafe fn hw_aesdec_x86(&self, key: m128i) -> m128i {
+        unsafe {
+            let s = _mm_loadu_si128(&self.0 as *const u128 as *const __m128i);
+            let k = _mm_loadu_si128(&key.0 as *const u128 as *const __m128i);
+            let r = _mm_aesdec_si128(s, k);
+            let mut out = 0u128;
+            _mm_storeu_si128(&mut out as *mut u128 as *mut __m128i, r);
+            m128i(out)
+        }
+    }
+
+    // --- ARM Hardware Implementation (iOS / Android) ---
+    #[cfg(target_arch = "aarch64")]
+    #[target_feature(enable = "aes")]
+    unsafe fn hw_aesenc_aarch64(&self, key: m128i) -> m128i {
+        let s = vreinterpretq_u8_u128(self.0);
+        let k = vreinterpretq_u8_u128(key.0);
+        let zero = vdupq_n_u8(0);
+
+        // RandomX expects x86 aesenc behavior:
+        // vaeseq (SubBytes + ShiftRows) -> vaesmcq (MixColumns) -> XOR key
+        let mut out = vaeseq_u8(s, zero);
+        out = vaesmcq_u8(out);
+        let res = veorq_u8(out, k);
+
+        m128i(vgetq_lane_u128(vreinterpretq_u128_u8(res), 0))
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[target_feature(enable = "aes")]
+    unsafe fn hw_aesdec_aarch64(&self, key: m128i) -> m128i {
+        let s = vreinterpretq_u8_u128(self.0);
+        let k = vreinterpretq_u8_u128(key.0);
+        let zero = vdupq_n_u8(0);
+
+        // vaesdq (InvSubBytes + InvShiftRows) -> vaesimcq (InvMixColumns) -> XOR key
+        let mut out = vaesdq_u8(s, zero);
+        out = vaesimcq_u8(out);
+        let res = veorq_u8(out, k);
+
+        m128i(vgetq_lane_u128(vreinterpretq_u128_u8(res), 0))
+    }
+
+    // --- Software Fallback (Using your T-Tables) ---
+    fn sw_aesenc(&self, key: m128i) -> m128i {
+        // This is your original software 'aesenc' function
+        m128i(super::m128::aesenc(self.0, key.0))
+    }
+
+    fn sw_aesdec(&self, key: m128i) -> m128i {
+        // This is your original software 'aesdec' function
+        m128i(super::m128::aesdec(self.0, key.0))
+    }
+
     pub fn zero() -> m128i {
         m128i(0)
     }
@@ -181,14 +295,6 @@ impl m128i {
 
     pub fn from_u64(u1: u64, u0: u64) -> m128i {
         m128i(((u1 as u128) << 64) | (u0 as u128))
-    }
-
-    pub fn aesdec(&self, key: m128i) -> m128i {
-        m128i(aesdec(self.0, key.0))
-    }
-
-    pub fn aesenc(&self, key: m128i) -> m128i {
-        m128i(aesenc(self.0, key.0))
     }
 
     pub fn as_i64(&self) -> (i64, i64) {

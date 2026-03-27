@@ -9,22 +9,33 @@ use super::program::{Instr, MAX_FLOAT_REG, MAX_REG, Mode, Program, Store};
 use std::convert::TryInto;
 use std::sync::Arc;
 
-unsafe extern "C" {
-    fn fesetround(round: i32) -> i32;
-}
-
-// Maps MXCSR rounding mode bits to the C fesetround constants.
-// 0 = nearest, 1 = down, 2 = up, 3 = truncate
 fn set_rounding_mode_env(mode: u32) {
+    #[cfg(target_arch = "x86_64")]
     unsafe {
-        let fe_mode: i32 = match mode {
-            0 => 0,     // FE_TONEAREST
-            1 => 0x400, // FE_DOWNWARD
-            2 => 0x800, // FE_UPWARD
-            3 => 0xC00, // FE_TOWARDZERO
+        let fe_mode: u32 = match mode {
+            1 => 0x400,
+            2 => 0x800,
+            3 => 0xC00,
             _ => 0,
         };
-        fesetround(fe_mode);
+        let mut mxcsr: u32 = 0;
+        std::arch::asm!("stmxcsr [{0}]", in(reg) &mut mxcsr as *mut u32, options(nostack));
+        mxcsr = (mxcsr & !0x6000) | (fe_mode & 0x6000);
+        std::arch::asm!("ldmxcsr [{0}]", in(reg) &mxcsr as *const u32, options(nostack));
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        let arm_mode: u64 = match mode {
+            1 => 0b10, // RM - toward minus inf
+            2 => 0b01, // RP - toward plus inf
+            3 => 0b11, // RZ - toward zero
+            _ => 0b00, // RN - nearest
+        };
+        let mut fpcr: u64;
+        std::arch::asm!("mrs {}, fpcr", out(reg) fpcr);
+        fpcr = (fpcr & !(0b11 << 22)) | (arm_mode << 22);
+        std::arch::asm!("msr fpcr, {}", in(reg) fpcr);
     }
 }
 

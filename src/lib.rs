@@ -10,6 +10,8 @@ pub mod program;
 pub mod superscalar;
 pub mod vm;
 
+use std::time::Instant;
+
 pub use crate::memory::VmMemory;
 pub use crate::vm::new_vm;
 
@@ -20,10 +22,18 @@ fn test_hashing() {
     use std::sync::Arc;
 
     let cache = Arc::new(VmMemory::full(b"test key 000"));
+    println!("Pre-faulting memory...");
+    {
+        let mut mem = cache.dataset_memory.write().unwrap();
+        for i in (0..mem.len()).step_by(512) { // step by page size
+            mem[i] = None; 
+        }
+    }
     let mut vm = new_vm(cache);
 
     for i in 0..10usize {
-        let hash = vm.calculate_hash(&i.to_be_bytes());
-        println!("{}", hash.to_hex())
+        let start = Instant::now();
+        let hash = vm.calculate_hash(&vec![10u8; i * 1000]);
+        println!("{}, took: {}ms", hash.to_hex(), start.elapsed().as_millis());
     }
 }
