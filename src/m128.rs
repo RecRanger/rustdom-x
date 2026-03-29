@@ -40,12 +40,7 @@ const INV_SBOX: [u8; 256] = [
     0x17, 0x2b, 0x04, 0x7e, 0xba, 0x77, 0xd6, 0x26, 0xe1, 0x69, 0x14, 0x63, 0x55, 0x21, 0x0c, 0x7d,
 ];
 
-// ---- Precomputed T-tables (SubBytes + ShiftRows + MixColumns in one lookup) ----
-//
-// ENC_TABLE.(0..3): encryption, indexed by the byte in each row position.
-// DEC_TABLE.(0..3): decryption, indexed by the byte in each row position.
-// Each entry encodes a full 4-byte column contribution as a u32 (little-endian).
-// Generated at compile time — zero runtime cost.
+// ---- Precomputed T-tables ----
 
 const fn xtime(a: u8) -> u8 {
     if a & 0x80 != 0 {
@@ -65,8 +60,6 @@ const fn make_enc_tables() -> ([u32; 256], [u32; 256], [u32; 256], [u32; 256]) {
         let s = SBOX[i];
         let x2 = xtime(s);
         let x3 = x2 ^ s;
-        // MixColumns column vector for byte in row 0: [2s, s, s, 3s]
-        // Rotated for rows 1-3.
         t0[i] = (x2 as u32) | ((s as u32) << 8) | ((s as u32) << 16) | ((x3 as u32) << 24);
         t1[i] = (x3 as u32) | ((x2 as u32) << 8) | ((s as u32) << 16) | ((s as u32) << 24);
         t2[i] = (s as u32) | ((x3 as u32) << 8) | ((x2 as u32) << 16) | ((s as u32) << 24);
@@ -91,8 +84,6 @@ const fn make_dec_tables() -> ([u32; 256], [u32; 256], [u32; 256], [u32; 256]) {
         let xb = x8 ^ x2 ^ s;
         let xd = x8 ^ x4 ^ s;
         let xe = x8 ^ x4 ^ x2;
-        // InvMixColumns column vector for byte in row 0: [0e, 09, 0d, 0b]
-        // Rotated for rows 1-3.
         t0[i] = (xe as u32) | ((x9 as u32) << 8) | ((xd as u32) << 16) | ((xb as u32) << 24);
         t1[i] = (xb as u32) | ((xe as u32) << 8) | ((x9 as u32) << 16) | ((xd as u32) << 24);
         t2[i] = (xd as u32) | ((xb as u32) << 8) | ((xe as u32) << 16) | ((x9 as u32) << 24);
@@ -107,24 +98,16 @@ static DEC_TABLE: ([u32; 256], [u32; 256], [u32; 256], [u32; 256]) = make_dec_ta
 
 // ---- AES round functions ----
 
-/// One AES encryption round: SubBytes + ShiftRows + MixColumns + AddRoundKey.
-/// Matches _mm_aesenc_si128 semantics exactly.
 fn aesenc(state: u128, key: u128) -> u128 {
     let b = state.to_le_bytes();
-
-    // Column-major layout: b[c*4 + r] = byte at (col=c, row=r).
-    // ShiftRows rotates row r left by r, so output col c row r reads
-    // from input col (c + r) % 4, row r.
-    // T-tables fold SubBytes + MixColumns into a single lookup per byte.
     let mut out = [0u32; 4];
     for c in 0..4usize {
-        let b0 = b[((c) % 4) * 4] as usize; // row 0
-        let b1 = b[((c + 1) % 4) * 4 + 1] as usize; // row 1
-        let b2 = b[((c + 2) % 4) * 4 + 2] as usize; // row 2
-        let b3 = b[((c + 3) % 4) * 4 + 3] as usize; // row 3
+        let b0 = b[((c) % 4) * 4] as usize;
+        let b1 = b[((c + 1) % 4) * 4 + 1] as usize;
+        let b2 = b[((c + 2) % 4) * 4 + 2] as usize;
+        let b3 = b[((c + 3) % 4) * 4 + 3] as usize;
         out[c] = ENC_TABLE.0[b0] ^ ENC_TABLE.1[b1] ^ ENC_TABLE.2[b2] ^ ENC_TABLE.3[b3];
     }
-
     let mut result = [0u8; 16];
     for c in 0..4 {
         result[c * 4..c * 4 + 4].copy_from_slice(&out[c].to_le_bytes());
@@ -132,22 +115,16 @@ fn aesenc(state: u128, key: u128) -> u128 {
     u128::from_le_bytes(result) ^ key
 }
 
-/// One AES decryption round: InvShiftRows + InvSubBytes + InvMixColumns + AddRoundKey.
-/// Matches _mm_aesdec_si128 semantics exactly.
 fn aesdec(state: u128, key: u128) -> u128 {
     let b = state.to_le_bytes();
-
-    // InvShiftRows rotates row r right by r, so output col c row r reads
-    // from input col (c + 4 - r) % 4, row r.
     let mut out = [0u32; 4];
     for c in 0..4usize {
-        let b0 = b[((c) % 4) * 4] as usize; // row 0, no shift
-        let b1 = b[((c + 3) % 4) * 4 + 1] as usize; // row 1, right 1
-        let b2 = b[((c + 2) % 4) * 4 + 2] as usize; // row 2, right 2
-        let b3 = b[((c + 1) % 4) * 4 + 3] as usize; // row 3, right 3
+        let b0 = b[((c) % 4) * 4] as usize;
+        let b1 = b[((c + 3) % 4) * 4 + 1] as usize;
+        let b2 = b[((c + 2) % 4) * 4 + 2] as usize;
+        let b3 = b[((c + 1) % 4) * 4 + 3] as usize;
         out[c] = DEC_TABLE.0[b0] ^ DEC_TABLE.1[b1] ^ DEC_TABLE.2[b2] ^ DEC_TABLE.3[b3];
     }
-
     let mut result = [0u8; 16];
     for c in 0..4 {
         result[c * 4..c * 4 + 4].copy_from_slice(&out[c].to_le_bytes());
@@ -156,6 +133,7 @@ fn aesdec(state: u128, key: u128) -> u128 {
 }
 
 // ---- m128i ----
+
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::*;
 
@@ -166,25 +144,35 @@ use std::arch::aarch64::*;
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub struct m128i(pub u128);
 
+// ---- aarch64 helpers ----
+
+#[cfg(target_arch = "aarch64")]
+unsafe fn u128_to_uint8x16(v: u128) -> uint8x16_t {
+    let bytes = v.to_le_bytes();
+    vld1q_u8(bytes.as_ptr())
+}
+
+#[cfg(target_arch = "aarch64")]
+unsafe fn uint8x16_to_u128(v: uint8x16_t) -> u128 {
+    let mut bytes = [0u8; 16];
+    vst1q_u8(bytes.as_mut_ptr(), v);
+    u128::from_le_bytes(bytes)
+}
+
 impl m128i {
     pub fn aesenc(&self, key: m128i) -> m128i {
-        // 1. Try x86 Hardware (Intel/AMD)
         #[cfg(target_arch = "x86_64")]
         {
             if is_x86_feature_detected!("aes") {
                 return unsafe { self.hw_aesenc_x86(key) };
             }
         }
-
-        // 2. Try ARM Hardware (Android/iOS)
         #[cfg(target_arch = "aarch64")]
         {
             if std::arch::is_aarch64_feature_detected!("aes") {
                 return unsafe { self.hw_aesenc_aarch64(key) };
             }
         }
-
-        // 3. Fallback to Software (Old/Cheap devices)
         self.sw_aesenc(key)
     }
 
@@ -195,18 +183,17 @@ impl m128i {
                 return unsafe { self.hw_aesdec_x86(key) };
             }
         }
-
         #[cfg(target_arch = "aarch64")]
         {
             if std::arch::is_aarch64_feature_detected!("aes") {
                 return unsafe { self.hw_aesdec_aarch64(key) };
             }
         }
-
         self.sw_aesdec(key)
     }
 
-    // --- x86 Hardware Implementation ---
+    // --- x86 Hardware ---
+
     #[cfg(target_arch = "x86_64")]
     #[target_feature(enable = "aes")]
     unsafe fn hw_aesenc_x86(&self, key: m128i) -> m128i {
@@ -233,47 +220,44 @@ impl m128i {
         }
     }
 
-    // --- ARM Hardware Implementation (iOS / Android) ---
+    // --- aarch64 Hardware ---
+
     #[cfg(target_arch = "aarch64")]
     #[target_feature(enable = "aes")]
     unsafe fn hw_aesenc_aarch64(&self, key: m128i) -> m128i {
-        let s = vreinterpretq_u8_u128(self.0);
-        let k = vreinterpretq_u8_u128(key.0);
-        let zero = vdupq_n_u8(0);
-
-        // RandomX expects x86 aesenc behavior:
-        // vaeseq (SubBytes + ShiftRows) -> vaesmcq (MixColumns) -> XOR key
-        let mut out = vaeseq_u8(s, zero);
-        out = vaesmcq_u8(out);
-        let res = veorq_u8(out, k);
-
-        m128i(vgetq_lane_u128(vreinterpretq_u128_u8(res), 0))
+        unsafe {
+            let s = u128_to_uint8x16(self.0);
+            let k = u128_to_uint8x16(key.0);
+            let zero = vdupq_n_u8(0);
+            let mut out = vaeseq_u8(s, zero);
+            out = vaesmcq_u8(out);
+            let res = veorq_u8(out, k);
+            m128i(uint8x16_to_u128(res))
+        }
     }
 
     #[cfg(target_arch = "aarch64")]
     #[target_feature(enable = "aes")]
     unsafe fn hw_aesdec_aarch64(&self, key: m128i) -> m128i {
-        let s = vreinterpretq_u8_u128(self.0);
-        let k = vreinterpretq_u8_u128(key.0);
-        let zero = vdupq_n_u8(0);
-
-        // vaesdq (InvSubBytes + InvShiftRows) -> vaesimcq (InvMixColumns) -> XOR key
-        let mut out = vaesdq_u8(s, zero);
-        out = vaesimcq_u8(out);
-        let res = veorq_u8(out, k);
-
-        m128i(vgetq_lane_u128(vreinterpretq_u128_u8(res), 0))
+        unsafe {
+            let s = u128_to_uint8x16(self.0);
+            let k = u128_to_uint8x16(key.0);
+            let zero = vdupq_n_u8(0);
+            let mut out = vaesdq_u8(s, zero);
+            out = vaesimcq_u8(out);
+            let res = veorq_u8(out, k);
+            m128i(uint8x16_to_u128(res))
+        }
     }
 
-    // --- Software Fallback (Using your T-Tables) ---
+    // --- Software Fallback ---
+
     fn sw_aesenc(&self, key: m128i) -> m128i {
-        // This is your original software 'aesenc' function
-        m128i(super::m128::aesenc(self.0, key.0))
+        m128i(aesenc(self.0, key.0))
     }
 
     fn sw_aesdec(&self, key: m128i) -> m128i {
-        // This is your original software 'aesdec' function
-        m128i(super::m128::aesdec(self.0, key.0))
+        m128i(aesdec(self.0, key.0))
     }
 
     pub fn zero() -> m128i {
@@ -303,7 +287,6 @@ impl m128i {
         (hi, lo)
     }
 
-    /// Converts the two lower i32 lanes to f64, matching _mm_cvtepi32_pd semantics.
     pub fn lower_to_m128d(&self) -> m128d {
         let i0 = self.0 as i32 as f64;
         let i1 = (self.0 >> 32) as i32 as f64;
@@ -366,8 +349,6 @@ impl m128d {
         (h.to_bits(), l.to_bits())
     }
 
-    /// Matches _mm_shuffle_pd(self, other, 1):
-    /// low lane = high of self, high lane = low of other.
     pub fn shuffle_1(&self, other: &m128d) -> m128d {
         let (self_hi, _) = self.as_f64();
         let (_, other_lo) = other.as_f64();
@@ -462,6 +443,8 @@ impl fmt::Debug for m128d {
         format_m128d(self, f)
     }
 }
+
+// ---- Tests ----
 
 #[cfg(test)]
 mod tests {
