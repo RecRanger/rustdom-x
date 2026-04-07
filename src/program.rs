@@ -1,5 +1,5 @@
 use super::m128::m128i;
-use super::vm::{is_zero_or_power_of_2, Vm, SCRATCHPAD_L3_MASK};
+use super::vm::{SCRATCHPAD_L3_MASK, Vm, is_zero_or_power_of_2};
 use std::fmt;
 use strum::Display;
 
@@ -47,14 +47,14 @@ pub enum Opcode {
 #[derive(Display, PartialEq)]
 pub enum Store {
     NONE,
-    //registers
+    // Registers.
     R(usize),
     F(usize),
     E(usize),
     A(usize),
     #[strum(serialize = "i")]
-    Imm, //non-register based Lx access
-    //Lx memory
+    Imm, // Non-register based Lx access.
+    // Lx memory.
     L1(Box<Store>),
     L2(Box<Store>),
     L3(Box<Store>),
@@ -244,7 +244,7 @@ fn write_l_access(
 
 pub struct Program {
     pub entropy: Vec<u64>,
-    pub program: Vec<Instr>,
+    pub program: Vec<Instr>, // Length (in practice): RANDOMX_PROGRAM_SIZE.
     pub register_usage: [i32; MAX_REG],
 }
 
@@ -559,9 +559,7 @@ pub fn decode_instruction(bytes: i64, i: i32, register_usage: &mut [i32; MAX_REG
     }
     if op < Opcode::CBRANCH as i64 {
         let target = register_usage[dst % MAX_REG];
-        for usage in register_usage.iter_mut().take(MAX_REG) {
-            *usage = i;
-        }
+        register_usage.fill(i);
         return Instr {
             op: Opcode::CBRANCH,
             dst: r_reg(dst),
@@ -610,7 +608,7 @@ pub fn r_reg(dst: usize) -> Store {
         5 => Store::R(5),
         6 => Store::R(6),
         7 => Store::R(7),
-        _ => Store::R(0),
+        _ => panic!("Invalid register index: r{}", dst % MAX_REG),
     }
 }
 
@@ -620,7 +618,7 @@ pub fn a_reg(dst: usize) -> Store {
         1 => Store::A(1),
         2 => Store::A(2),
         3 => Store::A(3),
-        _ => Store::A(0),
+        _ => panic!("Invalid float register index: a{}", dst % MAX_FLOAT_REG),
     }
 }
 
@@ -634,7 +632,7 @@ fn e_reg_ix(ix: usize) -> Store {
         1 => Store::E(1),
         2 => Store::E(2),
         3 => Store::E(3),
-        _ => Store::E(0),
+        _ => panic!("Invalid float register index: e{}", ix),
     }
 }
 
@@ -648,7 +646,7 @@ fn f_reg_ix(ix: usize) -> Store {
         1 => Store::F(1),
         2 => Store::F(2),
         3 => Store::F(3),
-        _ => Store::F(0),
+        _ => panic!("Invalid float register index: f{}", ix),
     }
 }
 
